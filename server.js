@@ -3,125 +3,322 @@ const admin = require("firebase-admin");
 const cors = require("cors");
 
 const app = express();
-app.use(cors());
-app.use(express.json());
 
-// Parse the service account from environment variable
+/* =========================
+   MIDDLEWARE
+========================= */
+app.use(cors());
+app.use(express.json({ limit: "10mb" }));
+
+/* =========================
+   FIREBASE INIT
+========================= */
+
 let serviceAccount;
+
 try {
-  // Try to get from environment variable (Render.com)
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    console.log("✅ Using service account from environment variable");
+    console.log("✅ Using FIREBASE_SERVICE_ACCOUNT from environment");
   } else {
-    // Fallback for local testing
     serviceAccount = require("./serviceAccountKey.json");
-    console.log("✅ Using service account from file");
+    console.log("✅ Using local serviceAccountKey.json");
   }
-} catch(e) {
-  console.error("❌ Failed to parse service account:", e.message);
+} catch (e) {
+  console.error("❌ Firebase service account error:", e);
   process.exit(1);
 }
 
-// Initialize Firebase Admin
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://solanatradingboxes-default-rtdb.firebaseio.com"
-});
+try {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    databaseURL:
+      "https://solanatradingboxes-default-rtdb.firebaseio.com",
+  });
+
+  console.log("✅ Firebase Admin initialized");
+} catch (e) {
+  console.error("❌ Firebase initialize failed:", e);
+  process.exit(1);
+}
 
 const db = admin.database();
-console.log("✅ Firebase Admin initialized successfully");
 
-// Health check endpoint
-app.get("/", (req, res) => {
-  res.json({ 
-    status: "Server is running!",
-    timestamp: new Date().toISOString()
+/* =========================
+   ROOT
+========================= */
+
+app.get("/", async (req, res) => {
+  res.json({
+    success: true,
+    message: "BOX backend is running",
+    time: new Date().toISOString(),
   });
 });
 
-// Get all boxes
+/* =========================
+   TEST ROUTE
+========================= */
+
+app.get("/test", async (req, res) => {
+  try {
+    await db.ref("serverTest").set({
+      time: Date.now(),
+      status: "working",
+    });
+
+    res.json({
+      success: true,
+      message: "Firebase write success",
+    });
+  } catch (e) {
+    console.error(e);
+
+    res.status(500).json({
+      success: false,
+      error: e.message,
+    });
+  }
+});
+
+/* =========================
+   GET ALL BOXES
+========================= */
+
 app.get("/getBoxes", async (req, res) => {
   try {
     const snapshot = await db.ref("boxes").once("value");
-    res.json(snapshot.val() || {});
-  } catch(error) {
-    console.error("Error getting boxes:", error);
-    res.status(500).json({ error: error.message });
+
+    res.json({
+      success: true,
+      data: snapshot.val() || {},
+    });
+  } catch (e) {
+    console.error("❌ getBoxes error:", e);
+
+    res.status(500).json({
+      success: false,
+      error: e.message,
+    });
   }
 });
 
-// Update a single box
+/* =========================
+   UPDATE BOX
+========================= */
+
 app.post("/updateBox", async (req, res) => {
   try {
     const { boxNumber, boxData } = req.body;
-    
-    if (!boxNumber || !boxData) {
-      return res.status(400).json({ error: "Missing boxNumber or boxData" });
+
+    if (!boxNumber) {
+      return res.status(400).json({
+        success: false,
+        error: "boxNumber missing",
+      });
     }
-    
+
+    if (!boxData) {
+      return res.status(400).json({
+        success: false,
+        error: "boxData missing",
+      });
+    }
+
     await db.ref(`boxes/${boxNumber}`).set(boxData);
-    console.log(`✅ Box ${boxNumber} updated`);
-    res.json({ success: true, boxNumber });
-  } catch(error) {
-    console.error("Error updating box:", error);
-    res.status(500).json({ error: error.message });
+
+    console.log(`✅ Box updated: ${boxNumber}`);
+
+    res.json({
+      success: true,
+      boxNumber,
+    });
+  } catch (e) {
+    console.error("❌ updateBox error:", e);
+
+    res.status(500).json({
+      success: false,
+      error: e.message,
+    });
   }
 });
 
-// Save a transaction
+/* =========================
+   SAVE TRANSACTION
+========================= */
+
 app.post("/saveTransaction", async (req, res) => {
   try {
     const { boxNumber, transactionId, data } = req.body;
-    
+
     if (!boxNumber || !transactionId || !data) {
-      return res.status(400).json({ error: "Missing required fields" });
+      return res.status(400).json({
+        success: false,
+        error: "Missing fields",
+      });
     }
-    
-    await db.ref(`transactions/${boxNumber}/${transactionId}`).set(data);
-    console.log(`✅ Transaction saved for box ${boxNumber}`);
-    res.json({ success: true });
-  } catch(error) {
-    console.error("Error saving transaction:", error);
-    res.status(500).json({ error: error.message });
+
+    await db
+      .ref(`transactions/${boxNumber}/${transactionId}`)
+      .set(data);
+
+    console.log(
+      `✅ Transaction saved for box ${boxNumber}`
+    );
+
+    res.json({
+      success: true,
+    });
+  } catch (e) {
+    console.error("❌ saveTransaction error:", e);
+
+    res.status(500).json({
+      success: false,
+      error: e.message,
+    });
   }
 });
 
-// Save defense points
+/* =========================
+   SAVE DEFENSE POINTS
+========================= */
+
 app.post("/saveDefense", async (req, res) => {
   try {
     const { wallet, boxNumber, points } = req.body;
-    
+
     if (!wallet || !boxNumber || points === undefined) {
-      return res.status(400).json({ error: "Missing required fields" });
+      return res.status(400).json({
+        success: false,
+        error: "Missing fields",
+      });
     }
-    
-    // Validate points range (0-5)
-    const validPoints = Math.min(5, Math.max(0, points));
-    
-    await db.ref(`defenses/${wallet}/${boxNumber}`).set(validPoints);
-    console.log(`✅ Defense points saved: ${wallet} box ${boxNumber} = ${validPoints}`);
-    res.json({ success: true });
-  } catch(error) {
-    console.error("Error saving defense points:", error);
-    res.status(500).json({ error: error.message });
+
+    const safePoints = Math.max(
+      0,
+      Math.min(5, Number(points))
+    );
+
+    await db
+      .ref(`defenses/${wallet}/${boxNumber}`)
+      .set(safePoints);
+
+    console.log(
+      `✅ Defense saved: ${wallet} box ${boxNumber} = ${safePoints}`
+    );
+
+    res.json({
+      success: true,
+      points: safePoints,
+    });
+  } catch (e) {
+    console.error("❌ saveDefense error:", e);
+
+    res.status(500).json({
+      success: false,
+      error: e.message,
+    });
   }
 });
 
-// Get defense points for a wallet
+/* =========================
+   GET DEFENSE
+========================= */
+
 app.get("/getDefense/:wallet/:boxNumber", async (req, res) => {
   try {
     const { wallet, boxNumber } = req.params;
-    const snapshot = await db.ref(`defenses/${wallet}/${boxNumber}`).once("value");
-    res.json({ points: snapshot.val() || 0 });
-  } catch(error) {
-    console.error("Error getting defense points:", error);
-    res.status(500).json({ error: error.message });
+
+    const snapshot = await db
+      .ref(`defenses/${wallet}/${boxNumber}`)
+      .once("value");
+
+    res.json({
+      success: true,
+      points: snapshot.val() || 0,
+    });
+  } catch (e) {
+    console.error("❌ getDefense error:", e);
+
+    res.status(500).json({
+      success: false,
+      error: e.message,
+    });
   }
 });
 
+/* =========================
+   GET ALL DEFENSES FOR WALLET
+========================= */
+
+app.get("/getWalletDefenses/:wallet", async (req, res) => {
+  try {
+    const { wallet } = req.params;
+
+    const snapshot = await db
+      .ref(`defenses/${wallet}`)
+      .once("value");
+
+    res.json({
+      success: true,
+      data: snapshot.val() || {},
+    });
+  } catch (e) {
+    console.error("❌ getWalletDefenses error:", e);
+
+    res.status(500).json({
+      success: false,
+      error: e.message,
+    });
+  }
+});
+
+/* =========================
+   DELETE BOX (OPTIONAL)
+========================= */
+
+app.delete("/deleteBox/:boxNumber", async (req, res) => {
+  try {
+    const { boxNumber } = req.params;
+
+    await db.ref(`boxes/${boxNumber}`).remove();
+
+    console.log(`🗑️ Deleted box ${boxNumber}`);
+
+    res.json({
+      success: true,
+    });
+  } catch (e) {
+    console.error("❌ deleteBox error:", e);
+
+    res.status(500).json({
+      success: false,
+      error: e.message,
+    });
+  }
+});
+
+/* =========================
+   SERVER
+========================= */
+
 const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📡 Ready to accept requests`);
+  console.log("=================================");
+  console.log(`🚀 BOX BACKEND RUNNING`);
+  console.log(`🌐 PORT: ${PORT}`);
+  console.log("=================================");
+});
+
+/* =========================
+   CRASH HANDLERS
+========================= */
+
+process.on("uncaughtException", (err) => {
+  console.error("❌ uncaughtException:", err);
+});
+
+process.on("unhandledRejection", (err) => {
+  console.error("❌ unhandledRejection:", err);
 });
