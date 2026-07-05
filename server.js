@@ -43,23 +43,21 @@ console.log(`⚙️ Config loaded: DEFENSE_HOURS=${DEFENSE_HOURS}, DEFENSE_NEEDE
 
 
 // Parse the service account from environment variable
-let serviceAccount;
-try {
-  // Try to get from environment variable (Render.com)
-  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
-    // Fix escaped newlines that Render sometimes mangles
-    const fixed = raw.replace(/\\n/g, '\n');
-    serviceAccount = JSON.parse(fixed);
-  } else {
-    // Fallback for local testing
-    serviceAccount = require("./solanatradingboxes-firebase-adminsdk-fbsvc-ed1dcb4b69.json");
-    console.log("✅ Using service account from file");
-  }
-} catch (e) {
-  console.error("❌ Failed to parse service account:", e.message);
-  process.exit(1);
-}
+const serviceAccount = {
+  type: "service_account",
+  projectId: process.env.FIREBASE_PROJECT_ID,
+  privateKeyId: process.env.FIREBASE_PRIVATE_KEY_ID,
+  privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+  clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+  clientId: process.env.FIREBASE_CLIENT_ID,
+  authUri: process.env.FIREBASE_AUTH_URI,
+  tokenUri: process.env.FIREBASE_TOKEN_URI,
+  authProviderX509CertUrl:
+    process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
+  clientX509CertUrl:
+    process.env.FIREBASE_CLIENT_X509_CERT_URL,
+  universeDomain: process.env.FIREBASE_UNIVERSE_DOMAIN,
+};
 
 // Initialize Firebase Admin
 admin.initializeApp({
