@@ -20,6 +20,7 @@ const {
 } = require("@solana/spl-token");
 
 const app = express();
+app.set('trust proxy', 1);  
 app.use(cors());
 app.use(express.json());
 const escrowSecret = Uint8Array.from(
@@ -59,12 +60,17 @@ const serviceAccount = {
   universeDomain: process.env.FIREBASE_UNIVERSE_DOMAIN,
 };
 
-// Initialize Firebase Admin
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://solanatradingboxes-default-rtdb.firebaseio.com/"
-});
+try {
+  // Initialize Firebase Admin
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    databaseURL: "https://solanatradingboxes-default-rtdb.firebaseio.com/",
+  });
 
+  console.log("✅ Firebase initialized");
+} catch (e) {
+  console.error("Firebase initialization failed:", e);
+}
 const db = admin.database();
 console.log("✅ Firebase Admin initialized successfully");
 
@@ -551,8 +557,8 @@ app.post("/confirmPurchase", async (req, res) => {
   let purchase = null;
   let escrowVerified = false;
   let paymentAlreadyRefunded = false;
-  let paymentSignature = null;   
-  let transferSignature = null; 
+  let paymentSignature = null;
+  let transferSignature = null;
 
   try {
 
