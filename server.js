@@ -1,3 +1,6 @@
+const dns = require("dns");
+dns.setDefaultResultOrder("ipv4first");
+
 const express = require("express");
 const admin = require("firebase-admin");
 const cors = require("cors");
@@ -101,11 +104,24 @@ app.get("/", (req, res) => {
 });
 
 // Get all boxes
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    )
+  ]);
+}
+
 app.get("/getBoxes", async (req, res) => {
   console.log("GET /getBoxes called");
 
   try {
-    const snapshot = await db.ref("boxes").once("value");
+    const snapshot = await withTimeout(
+      db.ref("boxes").once("value"),
+      8000,
+      "getBoxes"
+    );
 
     console.log("Firebase returned");
 
