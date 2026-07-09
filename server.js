@@ -1,6 +1,3 @@
-const dns = require("dns");
-dns.setDefaultResultOrder("ipv4first");
-
 const express = require("express");
 const admin = require("firebase-admin");
 const cors = require("cors");
@@ -74,26 +71,7 @@ try {
 } catch (e) {
   console.error("Firebase initialization failed:", e);
 }
-
-// --- ADD THIS BLOCK ---
-(async () => {
-  try {
-    const key = process.env.FIREBASE_PRIVATE_KEY;
-    console.log("🔑 Private key starts with:", key?.slice(0, 30));
-    console.log("🔑 Private key ends with:", key?.slice(-30));
-    console.log("🔑 Contains literal \\n:", key?.includes("\\n"));
-    console.log("🔑 Contains real newline:", key?.includes("\n"));
-
-    const tokenInfo = await admin.app().options.credential.getAccessToken();
-    console.log("✅ Auth token minted OK:", tokenInfo.access_token.slice(0, 15) + "...");
-  } catch (e) {
-    console.error("❌ Service account auth FAILED:", e.message);
-  }
-})();
-// --- END BLOCK ---
-
 const db = admin.database();
-
 console.log("✅ Firebase Admin initialized successfully");
 
 const connection = new Connection(
@@ -123,55 +101,14 @@ app.get("/", (req, res) => {
 });
 
 // Get all boxes
-function withTimeout(promise, ms, label) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
-    )
-  ]);
-}
-
 app.get("/getBoxes", async (req, res) => {
-  console.log("GET /getBoxes called");
 
   try {
-    const snapshot = await withTimeout(
-      db.ref("boxes").once("value"),
-      8000,
-      "getBoxes"
-    );
-
-    console.log("Firebase returned");
-
+    const snapshot = await db.ref("boxes").once("value");
     res.json(snapshot.val() || {});
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({
-      error: e.message,
-      stack: e.stack,
-    });
-  }
-});
-
-
-app.get("/firebase-test", async (req, res) => {
-  console.log("Testing Firebase");
-
-  try {
-    const ref = admin.database().ref("/");
-    const snapshot = await ref.get();
-
-    res.json({
-      success: true,
-      exists: snapshot.exists(),
-    });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({
-      error: e.message,
-      stack: e.stack,
-    });
+  } catch (error) {
+    console.error("Error getting boxes:", error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -214,8 +151,6 @@ app.post("/updateBox", writeLimiter, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-
 
 // Save a transaction
 app.post("/saveTransaction", writeLimiter, async (req, res) => {
