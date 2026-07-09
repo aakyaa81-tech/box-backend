@@ -119,6 +119,27 @@ app.get("/getBoxes", async (req, res) => {
   }
 });
 
+
+app.get("/firebase-test", async (req, res) => {
+  console.log("Testing Firebase");
+
+  try {
+    const ref = admin.database().ref("/");
+    const snapshot = await ref.get();
+
+    res.json({
+      success: true,
+      exists: snapshot.exists(),
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({
+      error: e.message,
+      stack: e.stack,
+    });
+  }
+});
+
 // Update a single box
 app.post("/updateBox", writeLimiter, async (req, res) => {
   const { boxNumber, boxData, swapSignature, paymentSignature, buyerWallet } = req.body;
@@ -158,6 +179,8 @@ app.post("/updateBox", writeLimiter, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+
 
 // Save a transaction
 app.post("/saveTransaction", writeLimiter, async (req, res) => {
