@@ -102,13 +102,20 @@ app.get("/", (req, res) => {
 
 // Get all boxes
 app.get("/getBoxes", async (req, res) => {
+  console.log("GET /getBoxes called");
 
   try {
     const snapshot = await db.ref("boxes").once("value");
+
+    console.log("Firebase returned");
+
     res.json(snapshot.val() || {});
-  } catch (error) {
-    console.error("Error getting boxes:", error);
-    res.status(500).json({ error: error.message });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({
+      error: e.message,
+      stack: e.stack,
+    });
   }
 });
 
