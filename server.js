@@ -74,7 +74,26 @@ try {
 } catch (e) {
   console.error("Firebase initialization failed:", e);
 }
+
+// --- ADD THIS BLOCK ---
+(async () => {
+  try {
+    const key = process.env.FIREBASE_PRIVATE_KEY;
+    console.log("🔑 Private key starts with:", key?.slice(0, 30));
+    console.log("🔑 Private key ends with:", key?.slice(-30));
+    console.log("🔑 Contains literal \\n:", key?.includes("\\n"));
+    console.log("🔑 Contains real newline:", key?.includes("\n"));
+
+    const tokenInfo = await admin.app().options.credential.getAccessToken();
+    console.log("✅ Auth token minted OK:", tokenInfo.access_token.slice(0, 15) + "...");
+  } catch (e) {
+    console.error("❌ Service account auth FAILED:", e.message);
+  }
+})();
+// --- END BLOCK ---
+
 const db = admin.database();
+
 console.log("✅ Firebase Admin initialized successfully");
 
 const connection = new Connection(
