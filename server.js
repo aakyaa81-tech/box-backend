@@ -1930,6 +1930,7 @@ async function bootstrapFirstAdminUser() {
  
 // ---- POST /api/auth/login ----
 adminApi.post("/auth/login", writeLimiter, async (req, res) => {
+  console.log("LOGIN ROUTE HIT");
   try {
     const { username, password } = req.body;
     if (!username || !password) {
