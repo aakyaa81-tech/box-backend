@@ -41,10 +41,11 @@ const STARTING_PRICE = parseFloat(process.env.STARTING_PRICE) || 0.001;
 const MAX_PRICE = parseFloat(process.env.MAX_PRICE) || 1;
 const CHAMPION_MAX_PRICE = parseFloat(process.env.CHAMPION_MAX_PRICE) || 2;
 const PRICE_MULTIPLIER = parseFloat(process.env.PRICE_MULTIPLIER) || 1.4;
-const DEFENSE_HOURS = parseFloat(process.env.DEFENSE_HOURS) || 0.0083;
+const DEFENSE_HOURS = parseFloat(process.env.DEFENSE_HOURS) || 12;
 const DEFENSE_NEEDED = parseInt(process.env.DEFENSE_NEEDED) || 5;
 const SLIPPAGE_BPS = parseInt(process.env.SLIPPAGE_BPS) || 50;
 const CREATOR_WALLET = process.env.CREATOR_WALLET || "DZLUTtcQ4aULLS1eqArsq8KiKKqoSqvEms44PHmHoQqe";
+const PURCHASE_LOCK_MS = parseInt(process.env.PURCHASE_LOCK_MS) || (90 * 1000); // 90 seconds
 
 // ---- NEW: admin dashboard config ----
 const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET;
@@ -529,7 +530,7 @@ app.post("/createPurchase", async (req, res) => {
     await db.ref(`boxes/${boxNumber}`).update({
       locked: true,
       lockedAt: now,
-      lockExpiry: now + (5 * 60 * 1000),
+      lockExpiry: now +  (90 * 1000),
       pendingPurchaseId: purchaseId
     });
 
@@ -2134,6 +2135,12 @@ adminApi.post("/boxes/reset", writeLimiter, requireFullAccess, async (req, res) 
         resetAt: Date.now(),
         restored: false,
       });
+
+       // Kill any purchase that's mid-flight for this box so it can't
+      // complete later against a box that's already been reset.
+      if (existingBox && existingBox.pendingPurchaseId) {
+        await db.ref(`pendingPurchases/${existingBox.pendingPurchaseId}`).remove();
+      }
  
       await boxRef.set({
         owner: null,
