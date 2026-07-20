@@ -2138,10 +2138,21 @@ adminApi.post("/boxes/reset", writeLimiter, requireFullAccess, async (req, res) 
       const snap = await boxRef.once("value");
       const existingBox = snap.val();
 
+      let defenseSnapshot = null;
+      if (existingBox && existingBox.owner) {
+        const defSnap = await db
+          .ref(`defenses/${existingBox.owner}/${boxNumber}`)
+          .once("value");
+        if (defSnap.exists()) {
+          defenseSnapshot = { wallet: existingBox.owner, points: defSnap.val() };
+        }
+      }
+
       const historyRef = db.ref("resetHistory").push();
       await historyRef.set({
         boxNumber: String(boxNumber),
         snapshot: existingBox || null,
+        defenseSnapshot, 
         resetBy: req.adminUser.username,
         resetAt: Date.now(),
         restored: false,
@@ -2151,6 +2162,10 @@ adminApi.post("/boxes/reset", writeLimiter, requireFullAccess, async (req, res) 
       // complete later against a box that's already been reset.
       if (existingBox && existingBox.pendingPurchaseId) {
         await db.ref(`pendingPurchases/${existingBox.pendingPurchaseId}`).remove();
+      }
+
+      if (existingBox && existingBox.owner) {
+        await db.ref(`defenses/${existingBox.owner}/${boxNumber}`).remove();  // <-- NEW
       }
 
       await boxRef.set({
@@ -2203,6 +2218,12 @@ adminApi.post("/boxes/reset-history/:id/restore", writeLimiter, requireFullAcces
     if (record.restored) return res.status(400).json({ error: "This reset was already restored" });
 
     await db.ref(`boxes/${record.boxNumber}`).set(record.snapshot || null);
+    if (record.defenseSnapshot) {                                          // <-- NEW
+      await db
+        .ref(`defenses/${record.defenseSnapshot.wallet}/${record.boxNumber}`)
+        .set(record.defenseSnapshot.points);
+    }
+    
     await recordRef.update({ restored: true, restoredAt: Date.now(), restoredBy: req.adminUser.username });
 
     emitBoxesUpdate();
