@@ -81,12 +81,20 @@ try {
     credential: admin.credential.cert(serviceAccount),
     databaseURL: "https://solanatradingboxes-default-rtdb.firebaseio.com/",
   });
-
   console.log("✅ Firebase initialized");
 } catch (e) {
   console.error("Firebase initialization failed:", e);
 }
 const db = admin.database();
+(async () => {
+  try {
+    await initializeFeatures();
+    await initFakeGreenBoxes(); 
+  } catch (err) {
+    console.error(err);
+  }
+})();
+
 console.log("✅ Firebase Admin initialized successfully");
 
 const connection = new Connection(
@@ -106,7 +114,20 @@ const readLimiter = rateLimit({
   max: 60,
   message: { error: 'Too many requests' }
 });
+async function initFakeGreenBoxes() {
+  const snap = await db.ref("fakeGreenBoxes/currentSet").once("value");
+  if (snap.exists()) return; // already set
+  await shuffleFakeGreenBoxes();
+}
+async function initializeFeatures() {
+  const featuresRef = db.ref("features/fakeGreenEnabled");
+  const featSnap = await featuresRef.once("value");
 
+  if (!featSnap.exists()) {
+    await featuresRef.set(true);
+    console.log("✅ Created features/fakeGreenEnabled");
+  }
+}
 // Health check endpoint
 app.get("/", (req, res) => {
   res.json({
@@ -2152,7 +2173,7 @@ adminApi.post("/boxes/reset", writeLimiter, requireFullAccess, async (req, res) 
       await historyRef.set({
         boxNumber: String(boxNumber),
         snapshot: existingBox || null,
-        defenseSnapshot, 
+        defenseSnapshot,
         resetBy: req.adminUser.username,
         resetAt: Date.now(),
         restored: false,
@@ -2223,7 +2244,7 @@ adminApi.post("/boxes/reset-history/:id/restore", writeLimiter, requireFullAcces
         .ref(`defenses/${record.defenseSnapshot.wallet}/${record.boxNumber}`)
         .set(record.defenseSnapshot.points);
     }
-    
+
     await recordRef.update({ restored: true, restoredAt: Date.now(), restoredBy: req.adminUser.username });
 
     emitBoxesUpdate();
@@ -2298,6 +2319,52 @@ adminApi.patch("/users/:id", writeLimiter, requireFullAccess, async (req, res) =
     res.status(500).json({ error: err.message });
   }
 });
+// ---- GET /api/fake-green ----
+adminApi.get("/fake-green", readLimiter, async (req, res) => {
+  try {
+    const snap = await db.ref("fakeGreenBoxes").once("value");
+    const data = snap.val() || {};
+    res.json({
+      currentSet: data.currentSet || [],
+      generatedAt: data.generatedAt || null,
+      expiresAt: data.expiresAt || null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// ---- GET /api/fake-green/status ----
+adminApi.get("/fake-green/status", readLimiter, async (req, res) => {
+  try {
+    const snap = await db.ref("features/fakeGreenEnabled").once("value");
+    const enabled = snap.val() !== false;
+    res.json({ enabled });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- POST /api/fake-green/toggle (full access only) ----
+adminApi.post("/fake-green/toggle", writeLimiter, requireFullAccess, async (req, res) => {
+  try {
+    const { enabled } = req.body;
+    if (typeof enabled !== "boolean") {
+      return res.status(400).json({ error: "enabled must be a boolean" });
+    }
+    await db.ref("features/fakeGreenEnabled").set(enabled);
+
+    if (!enabled) {
+      await removeAllFakeGreenBoxes();
+    } else {
+      // Immediately generate new fake green boxes
+      await shuffleFakeGreenBoxes();
+    }
+    emitBoxesUpdate();
+    res.json({ success: true, enabled });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 
 /* ============================================================================
@@ -2336,6 +2403,177 @@ function emitBoxesUpdate() {
     emitPending = false;
   }, 500);
 }
+/**
+ * Pick up to 500 unsold, non‑locked, non‑champion boxes.
+ * Tiered range: first 1‑1000, then 1‑1500, 1‑2000 … 1‑10000.
+ */
+function pickFakeGreenBoxes(allBoxes) {
+  const eligibleBoxes = [];
+  // Ranges: [1000, 1500, 2000, 2500, …, 10000]
+  for (let maxNum = 1000; maxNum <= 10000; maxNum += 500) {
+    const inRange = [];
+    for (const [num, box] of Object.entries(allBoxes)) {
+      const boxNum = Number(num);
+      if (boxNum <= maxNum && !box.isSold && !box.owner && !box.isChampion && !box.locked) {
+        inRange.push(boxNum);
+      }
+    }
+
+    if (inRange.length >= 500) {
+      // Shuffle and take first 500
+      const shuffled = inRange.sort(() => Math.random() - 0.5);
+      return shuffled.slice(0, 500);
+    }
+  }
+
+  // If less than 500 eligible boxes exist in the entire set, return whatever we have
+  // (this final pass uses all boxes 1‑10000, which we already have in allBoxes)
+  const allEligible = [];
+  for (const [num, box] of Object.entries(allBoxes)) {
+    const boxNum = Number(num);
+    if (!box.isSold && !box.owner && !box.isChampion && !box.locked) {
+      allEligible.push(boxNum);
+    }
+  }
+  return allEligible.sort(() => Math.random() - 0.5); // all of them, shuffled
+}
+async function shuffleFakeGreenBoxes() {
+  try {
+    const enabledSnap = await db.ref("features/fakeGreenEnabled").once("value");
+    const enabled = enabledSnap.val() !== false;
+    if (!enabled) {
+      await removeAllFakeGreenBoxes();
+      console.log("🚫 Fake green boxes disabled – cleaned up.");
+      return;
+    }
+
+    const boxesSnap = await db.ref("boxes").once("value");
+    const allBoxes = boxesSnap.val() || {};
+    const fakeGreenBoxesRef = db.ref("fakeGreenBoxes");
+    const snapshot = await fakeGreenBoxesRef.once("value");
+
+    if (!snapshot.exists()) {
+      console.log("Creating fakeGreenBoxes for the first time...");
+      const newSet = pickFakeGreenBoxes(allBoxes);
+
+      const updates = {};
+      for (const boxNum of newSet) {
+        updates[`boxes/${boxNum}`] = {
+          owner: null,
+          isSold: false,
+          isTrading: true,
+          isChampion: false,
+          locked: false,
+          currentPrice: STARTING_PRICE,
+          nextPrice: STARTING_PRICE * PRICE_MULTIPLIER,
+          purchaseCount: 0,
+          attackCount: 0,
+          ownerInvestment: null,
+          lastPurchaseTime: null,
+        };
+      }
+      updates["fakeGreenBoxes"] = {
+        currentSet: newSet,
+        generatedAt: Date.now(),
+        expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+      };
+      await db.ref().update(updates);
+      console.log(`✅ Created fakeGreenBoxes with ${newSet.length} boxes.`);
+      return;
+    }
+
+    // Normal shuffle: pick a new set of 500 boxes using the tiered range logic
+    const newSet = pickFakeGreenBoxes(allBoxes);
+
+    // Handle old fake boxes: revert those no longer selected (if unsold)
+    const oldSetSnap = await db.ref("fakeGreenBoxes/currentSet").once("value");
+    const oldSet = oldSetSnap.val() || [];
+    const newSetSet = new Set(newSet);
+
+    for (const boxNum of oldSet) {
+      if (!newSetSet.has(boxNum)) {
+        const boxRef = db.ref(`boxes/${boxNum}`);
+        const snap = await boxRef.once("value");
+        const box = snap.val();
+        if (box && !box.isSold && !box.owner) {
+          await boxRef.set({
+            owner: null,
+            previousOwner: null,
+            isSold: false,
+            isTrading: false,
+            isChampion: false,
+            locked: false,
+            pendingPurchaseId: null,
+            lockExpiry: null,
+            currentPrice: STARTING_PRICE,
+            nextPrice: STARTING_PRICE * PRICE_MULTIPLIER,
+            purchaseCount: 0,
+            attackCount: 0,
+            ownerInvestment: null,
+            lastPurchaseTime: null,
+          });
+        }
+      }
+    }
+
+    // Apply new fake green boxes
+    const updates = {};
+    for (const boxNum of newSet) {
+      updates[`boxes/${boxNum}`] = {
+        owner: null,
+        isSold: false,
+        isTrading: true,
+        isChampion: false,
+        locked: false,
+        currentPrice: STARTING_PRICE,
+        nextPrice: STARTING_PRICE * PRICE_MULTIPLIER,
+        purchaseCount: 0,
+        attackCount: 0,
+        ownerInvestment: null,
+        lastPurchaseTime: null,
+      };
+    }
+    await db.ref().update(updates);
+
+    const now = Date.now();
+    await db.ref("fakeGreenBoxes").set({
+      currentSet: newSet,
+      generatedAt: now,
+      expiresAt: now + 24 * 60 * 60 * 1000,
+    });
+
+    console.log(`✅ Fake green boxes updated – ${newSet.length} boxes`);
+  } catch (err) {
+    console.error("❌ Error shuffling fake green boxes:", err);
+  }
+}
+async function removeAllFakeGreenBoxes() {
+  const snap = await db.ref("fakeGreenBoxes/currentSet").once("value");
+  const currentSet = snap.val() || [];
+  const updates = {};
+  for (const boxNum of currentSet) {
+    updates[`boxes/${boxNum}`] = {
+      owner: null,
+      previousOwner: null,
+      isSold: false,
+      isTrading: false,
+      isChampion: false,
+      locked: false,
+      pendingPurchaseId: null,
+      lockExpiry: null,
+      currentPrice: STARTING_PRICE,
+      nextPrice: STARTING_PRICE * PRICE_MULTIPLIER,
+      purchaseCount: 0,
+      attackCount: 0,
+      ownerInvestment: null,
+      lastPurchaseTime: null,
+    };
+  }
+  if (Object.keys(updates).length > 0) {
+    await db.ref().update(updates);
+  }
+  await db.ref("fakeGreenBoxes/currentSet").set([]);
+}
 
 // Any change anywhere under /boxes (purchases, cron champion upgrades,
 // admin reward/reset) pushes a live update to connected dashboards.
@@ -2348,11 +2586,17 @@ bootstrapFirstAdminUser();
 // cron.schedule('*/5 * * * *', async () => {
 //   await checkAndUpdateDefensePoints();
 // });
+cron.schedule("0 0 * * *", async () => {
+  console.log("🎲 Shuffling fake green boxes…");
+  await shuffleFakeGreenBoxes();
+});
+
 cron.schedule('* * * * *', async () => {
   await checkAndUpdateDefensePoints();
   await cleanupExpiredLocks(); // <-- ADD THIS
   await processFailedRefunds();
 });
+
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
