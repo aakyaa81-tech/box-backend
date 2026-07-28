@@ -2407,35 +2407,44 @@ function emitBoxesUpdate() {
  * Pick up to 500 unsold, non‑locked, non‑champion boxes.
  * Tiered range: first 1‑1000, then 1‑1500, 1‑2000 … 1‑10000.
  */
-function pickFakeGreenBoxes(allBoxes) {
-  const eligibleBoxes = [];
-  // Ranges: [1000, 1500, 2000, 2500, …, 10000]
-  for (let maxNum = 1000; maxNum <= 10000; maxNum += 500) {
-    const inRange = [];
-    for (const [num, box] of Object.entries(allBoxes)) {
-      const boxNum = Number(num);
-      if (boxNum <= maxNum && !box.isSold && !box.owner && !box.isChampion && !box.locked) {
-        inRange.push(boxNum);
-      }
+
+function shuffleArray(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function pickFakeGreenBoxes(allBoxes, targetCount = 500) {
+  const selected = [];
+  let rangeStart = 1;
+  let rangeEnd = 1000;
+
+  while (selected.length < targetCount && rangeStart <= 10000) {
+    const tierEligible = [];
+    for (let num = rangeStart; num <= Math.min(rangeEnd, 10000); num++) {
+      const box = allBoxes[num];
+      if (box && (box.isSold || box.owner || box.isChampion || box.locked)) continue;
+      tierEligible.push(num);
     }
 
-    if (inRange.length >= 500) {
-      // Shuffle and take first 500
-      const shuffled = inRange.sort(() => Math.random() - 0.5);
-      return shuffled.slice(0, 500);
-    }
+    shuffleArray(tierEligible);
+
+    const stillNeeded = targetCount - selected.length;
+    selected.push(...tierEligible.slice(0, stillNeeded));
+
+    rangeStart = rangeEnd + 1;
+    rangeEnd += 500;
   }
 
-  // If less than 500 eligible boxes exist in the entire set, return whatever we have
-  // (this final pass uses all boxes 1‑10000, which we already have in allBoxes)
-  const allEligible = [];
-  for (const [num, box] of Object.entries(allBoxes)) {
-    const boxNum = Number(num);
-    if (!box.isSold && !box.owner && !box.isChampion && !box.locked) {
-      allEligible.push(boxNum);
-    }
+  if (selected.length < targetCount) {
+    console.warn(
+      `⚠️ Only found ${selected.length}/${targetCount} eligible boxes for the green set across the full 1-10000 range.`
+    );
   }
-  return allEligible.sort(() => Math.random() - 0.5); // all of them, shuffled
+
+  return selected;
 }
 async function shuffleFakeGreenBoxes() {
   try {
@@ -2552,6 +2561,15 @@ async function removeAllFakeGreenBoxes() {
   const currentSet = snap.val() || [];
   const updates = {};
   for (const boxNum of currentSet) {
+    const boxSnap = await db.ref(`boxes/${boxNum}`).once("value");
+    const box = boxSnap.val();
+
+    // If someone actually bought this box while it was "fake green",
+    // it's a real sale now — never wipe it out.
+    if (box && (box.isSold || box.owner)) {
+      continue;
+    }
+
     updates[`boxes/${boxNum}`] = {
       owner: null,
       previousOwner: null,
