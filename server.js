@@ -2116,6 +2116,8 @@ adminApi.post("/boxes/reward", writeLimiter, requireFullAccess, async (req, res)
           nextPrice: Math.min(bumpedPrice * PRICE_MULTIPLIER, maxAllowed),
         });
 
+        await removeBoxFromFakeGreenSet(boxNumber);
+
         const txId = crypto.randomUUID();
         await db.ref(`transactions/${boxNumber}/${txId}`).set({
           buyer: wallet,
@@ -2144,6 +2146,16 @@ adminApi.post("/boxes/reward", writeLimiter, requireFullAccess, async (req, res)
     res.status(500).json({ error: err.message });
   }
 });
+
+async function removeBoxFromFakeGreenSet(boxNumber) {
+  const setSnap = await db.ref("fakeGreenBoxes/currentSet").once("value");
+  const currentSet = setSnap.val() || [];
+  if (!currentSet.includes(Number(boxNumber))) return;
+
+  const newSet = currentSet.filter(n => n !== Number(boxNumber));
+  await db.ref("fakeGreenBoxes/currentSet").set(newSet);
+  console.log(`🧹 Removed box #${boxNumber} from fakeGreenBoxes/currentSet`);
+}
 
 // ---- POST /api/boxes/reset (full_access) ----
 // Snapshots each box to resetHistory, then clears it back to unsold.
@@ -2205,6 +2217,8 @@ adminApi.post("/boxes/reset", writeLimiter, requireFullAccess, async (req, res) 
         ownerInvestment: null,
         lastPurchaseTime: null,
       });
+
+      await removeBoxFromFakeGreenSet(boxNumber);
     }
 
     emitBoxesUpdate();
