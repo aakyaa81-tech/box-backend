@@ -2268,6 +2268,155 @@ adminApi.post("/boxes/reset-history/:id/restore", writeLimiter, requireFullAcces
   }
 });
 
+// ---- POST /api/boxes/fix-price (full_access) ----
+// Corrects a box's on-platform price/ownership WITHOUT touching BOX SPL
+// tokens. Use when a box's state got desynced from reality — e.g. a
+// Champion box was accidentally reset but the owner still holds their
+// BOX tokens. This only writes Firebase fields (owner, price, champion
+// flag, etc.), mirroring what a real purchase/reward leaves behind, but
+// never transfers tokens.
+adminApi.post("/boxes/fix-price", writeLimiter, requireFullAccess, async (req, res) => {
+  try {
+    const {
+      boxNumber,
+      walletAddress,
+      priceMode,        // "manual" | "multiplier"
+      manualPrice,       // used when priceMode === "manual"
+      multiplierSteps,   // used when priceMode === "multiplier"
+      isChampion,
+      purchaseCount,     // optional override
+    } = req.body;
+
+    if (!boxNumber || !walletAddress) {
+      return res.status(400).json({ error: "boxNumber and walletAddress are required" });
+    }
+    if (!["manual", "multiplier"].includes(priceMode)) {
+      return res.status(400).json({ error: "priceMode must be 'manual' or 'multiplier'" });
+    }
+
+    const maxAllowed = isChampion ? CHAMPION_MAX_PRICE : MAX_PRICE;
+
+    let price;
+    if (priceMode === "manual") {
+      price = Number(manualPrice);
+      if (!price || price <= 0) {
+        return res.status(400).json({ error: "manualPrice must be a positive number" });
+      }
+    } else {
+      const steps = Number(multiplierSteps);
+      if (!Number.isFinite(steps) || steps < 0) {
+        return res.status(400).json({ error: "multiplierSteps must be a non-negative number" });
+      }
+      price = STARTING_PRICE * Math.pow(PRICE_MULTIPLIER, steps);
+    }
+    if (price > maxAllowed) price = maxAllowed;
+
+    const boxRef = db.ref(`boxes/${boxNumber}`);
+    const snap = await boxRef.once("value");
+    const existingBox = snap.val();
+
+    // Snapshot before overwrite, same pattern as resetHistory.
+    const historyRef = db.ref("boxFixHistory").push();
+    await historyRef.set({
+      boxNumber: String(boxNumber),
+      snapshot: existingBox || null,
+      fixedTo: { walletAddress, price, isChampion: !!isChampion },
+      fixedBy: req.adminUser.username,
+      fixedAt: Date.now(),
+      restored: false,
+    });
+
+    if (existingBox && existingBox.pendingPurchaseId) {
+      await db.ref(`pendingPurchases/${existingBox.pendingPurchaseId}`).remove();
+    }
+
+    const nextPrice = Math.min(price * PRICE_MULTIPLIER, maxAllowed);
+
+    await boxRef.update({
+      owner: walletAddress,
+      previousOwner: existingBox?.owner || null,
+      isSold: true,
+      isTrading: true,
+      isChampion: !!isChampion,
+      currentPrice: price,
+      nextPrice,
+      ownerInvestment: price,
+      purchaseCount:
+        purchaseCount !== undefined && purchaseCount !== null && purchaseCount !== ""
+          ? Number(purchaseCount)
+          : existingBox?.purchaseCount || 1,
+      lastPurchaseTime: Date.now(),
+      locked: false,
+      pendingPurchaseId: null,
+      lockExpiry: null,
+    });
+
+    // Audit trail — clearly flagged as an admin correction, no signature.
+    const txId = crypto.randomUUID();
+    await db.ref(`transactions/${boxNumber}/${txId}`).set({
+      type: "admin_fix",
+      buyer: walletAddress,
+      seller: existingBox?.owner || null,
+      price,
+      note: "Owner already held their BOX tokens — this only corrected the on-platform price/ownership record.",
+      fixedBy: req.adminUser.username,
+      timestamp: Date.now(),
+    });
+
+    await removeBoxFromFakeGreenSet(boxNumber);
+    emitBoxesUpdate();
+
+    res.json({ success: true, boxNumber, walletAddress, price, nextPrice, isChampion: !!isChampion });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- GET /api/boxes/fix-history/list (full_access) ----
+adminApi.get("/boxes/fix-history/list", readLimiter, requireFullAccess, async (req, res) => {
+  try {
+    const snap = await db.ref("boxFixHistory").once("value");
+    const all = snap.val() || {};
+    const records = Object.keys(all)
+      .map((id) => ({ _id: id, ...all[id] }))
+      .sort((a, b) => b.fixedAt - a.fixedAt);
+    res.json({ records });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- POST /api/boxes/fix-history/:id/restore (full_access) ----
+adminApi.post("/boxes/fix-history/:id/restore", writeLimiter, requireFullAccess, async (req, res) => {
+  try {
+    const recordRef = db.ref(`boxFixHistory/${req.params.id}`);
+    const snap = await recordRef.once("value");
+    const record = snap.val();
+
+    if (!record) return res.status(404).json({ error: "Fix record not found" });
+    if (record.restored) return res.status(400).json({ error: "This fix was already restored" });
+
+    await db.ref(`boxes/${record.boxNumber}`).set(record.snapshot || null);
+    await recordRef.update({ restored: true, restoredAt: Date.now(), restoredBy: req.adminUser.username });
+
+    emitBoxesUpdate();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- GET /api/box-economy-config ----
+// Lets the dashboard preview computed multiplier prices client-side.
+adminApi.get("/box-economy-config", readLimiter, async (req, res) => {
+  res.json({
+    startingPrice: STARTING_PRICE,
+    maxPrice: MAX_PRICE,
+    championMaxPrice: CHAMPION_MAX_PRICE,
+    priceMultiplier: PRICE_MULTIPLIER,
+  });
+});
+
 // ---- POST /api/users (full_access) — create a dashboard operator ----
 adminApi.post("/users", writeLimiter, requireFullAccess, async (req, res) => {
   try {
