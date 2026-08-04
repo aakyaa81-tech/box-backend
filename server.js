@@ -89,7 +89,7 @@ const db = admin.database();
 (async () => {
   try {
     await initializeFeatures();
-    await initFakeGreenBoxes(); 
+    await initFakeGreenBoxes();
   } catch (err) {
     console.error(err);
   }
@@ -2331,6 +2331,9 @@ adminApi.post("/boxes/fix-price", writeLimiter, requireFullAccess, async (req, r
     }
 
     const nextPrice = Math.min(price * PRICE_MULTIPLIER, maxAllowed);
+    const bumpedPrice = Math.min(price * PRICE_MULTIPLIER, maxAllowed);
+    const followingPrice = Math.min(bumpedPrice * PRICE_MULTIPLIER, maxAllowed);
+
 
     await boxRef.update({
       owner: walletAddress,
@@ -2338,8 +2341,8 @@ adminApi.post("/boxes/fix-price", writeLimiter, requireFullAccess, async (req, r
       isSold: true,
       isTrading: true,
       isChampion: !!isChampion,
-      currentPrice: price,
-      nextPrice,
+      currentPrice: bumpedPrice,     // what the NEXT buyer pays
+      nextPrice: followingPrice,
       ownerInvestment: price,
       purchaseCount:
         purchaseCount !== undefined && purchaseCount !== null && purchaseCount !== ""
@@ -2365,8 +2368,7 @@ adminApi.post("/boxes/fix-price", writeLimiter, requireFullAccess, async (req, r
 
     await removeBoxFromFakeGreenSet(boxNumber);
     emitBoxesUpdate();
-
-    res.json({ success: true, boxNumber, walletAddress, price, nextPrice, isChampion: !!isChampion });
+    res.json({ success: true, boxNumber, walletAddress, price, currentPrice: bumpedPrice, nextPrice: followingPrice, isChampion: !!isChampion });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
